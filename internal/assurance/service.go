@@ -77,6 +77,43 @@ func (s *Service) Device(ctx context.Context, id string) (domain.Device, error) 
 	return found, err
 }
 
+func (s *Service) RetireDevice(ctx context.Context, deviceID string, input contracts.RetireDeviceRequest) (domain.Device, error) {
+	var retired domain.Device
+	err := s.repository.Mutate(ctx, func(m *repository.Mutation) error {
+		id := strings.TrimSpace(deviceID)
+		item, exists := m.Device(id)
+		if !exists {
+			return fmt.Errorf("%w: device %s", domain.ErrNotFound, id)
+		}
+		if active, exists := m.ActiveCaseForDevice(item.ID); exists {
+			return fmt.Errorf("%w: device %s has unfinished case %s in %s", domain.ErrActiveCaseExists, item.ID, active.ID, active.State)
+		}
+		if err := item.Retire(input.Actor, input.Reason, s.now()); err != nil {
+			return err
+		}
+		if err := m.UpdateDevice(item); err != nil {
+			return err
+		}
+		event, err := domain.NewAuditEvent(
+			m.NextID("event"),
+			"device",
+			item.ID,
+			"",
+			"device_retired",
+			item.RetiredBy,
+			fmt.Sprintf("device retired: %s", item.RetiredReason),
+			s.now(),
+		)
+		if err != nil {
+			return err
+		}
+		m.AppendEvent(event)
+		retired = item
+		return nil
+	})
+	return retired, err
+}
+
 func (s *Service) OpenCase(ctx context.Context, input contracts.OpenCaseRequest) (contracts.CaseResponse, error) {
 	var result contracts.CaseResponse
 	err := s.repository.Mutate(ctx, func(m *repository.Mutation) error {

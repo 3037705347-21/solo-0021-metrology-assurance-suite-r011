@@ -155,6 +155,28 @@
         "contracts",
         "bootstrap"
       ]
+    },
+    {
+      "id": "retire-device",
+      "name": "Retire device",
+      "entry": "POST /devices/{id}/retire",
+      "steps": [
+        "verify the device exists and has no unfinished case",
+        "validate the retiring actor and reason",
+        "move the device to retired with actor, reason, and timestamp and append the audit event"
+      ],
+      "success": "returns the retired device and keeps historical cases and audit events readable",
+      "failure": "returns conflict for an unfinished case or repeat retirement and invalid input for a missing actor or reason",
+      "verification": "workflowcheck blocks retirement for every unfinished case state, retires after sealing, rejects repeat retirement and new cases, and races retirement against opening a case",
+      "module_ids": [
+        "runtimecheck",
+        "httpapi",
+        "assurance",
+        "domain",
+        "repository",
+        "contracts",
+        "bootstrap"
+      ]
     }
   ],
   "complexity": {

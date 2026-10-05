@@ -30,6 +30,10 @@
     {
       "workflow_id": "seal-verification",
       "command": "go run ./cmd/workflowcheck --workflow seal-verification"
+    },
+    {
+      "workflow_id": "retire-device",
+      "command": "go run ./cmd/workflowcheck --workflow retire-device"
     }
   ]
 }

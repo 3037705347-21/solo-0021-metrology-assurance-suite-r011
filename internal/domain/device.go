@@ -14,14 +14,16 @@ const (
 )
 
 type Device struct {
-	ID         string       `json:"id"`
-	AssetTag   string       `json:"asset_tag"`
-	Model      string       `json:"model"`
-	Room       string       `json:"room"`
-	Steward    string       `json:"steward"`
-	Status     DeviceStatus `json:"status"`
-	EnrolledAt time.Time    `json:"enrolled_at"`
-	RetiredAt  *time.Time   `json:"retired_at,omitempty"`
+	ID            string       `json:"id"`
+	AssetTag      string       `json:"asset_tag"`
+	Model         string       `json:"model"`
+	Room          string       `json:"room"`
+	Steward       string       `json:"steward"`
+	Status        DeviceStatus `json:"status"`
+	EnrolledAt    time.Time    `json:"enrolled_at"`
+	RetiredAt     *time.Time   `json:"retired_at,omitempty"`
+	RetiredBy     string       `json:"retired_by,omitempty"`
+	RetiredReason string       `json:"retired_reason,omitempty"`
 }
 
 func NewDevice(id, assetTag, model, room, steward string, at time.Time) (Device, error) {
@@ -66,12 +68,17 @@ func (d Device) IsActive() bool {
 	return d.Status == DeviceActive
 }
 
-func (d *Device) Retire(at time.Time) error {
+func (d *Device) Retire(actor, reason string, at time.Time) error {
+	if strings.TrimSpace(actor) == "" || strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("%w: retire actor and reason are required", ErrInvalidInput)
+	}
 	if d.Status != DeviceActive {
 		return fmt.Errorf("%w: only an active device can be retired", ErrStateConflict)
 	}
 	stamp := at.UTC()
 	d.Status = DeviceRetired
 	d.RetiredAt = &stamp
+	d.RetiredBy = strings.TrimSpace(actor)
+	d.RetiredReason = strings.TrimSpace(reason)
 	return nil
 }

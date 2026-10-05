@@ -40,6 +40,7 @@ func main() {
 		"record-measurement":       checkRecordMeasurement,
 		"reopen-verification-case": checkReopenVerificationCase,
 		"seal-verification":        checkSealVerification,
+		"retire-device":            checkRetireDevice,
 	}
 	run, ok := checks[*workflow]
 	if !ok {
@@ -375,6 +376,316 @@ func checkSealVerification() error {
 	return nil
 }
 
+func checkRetireDevice() error {
+	h := newHarness()
+	defer h.close()
+
+	// Devices with a case in every unfinished state cannot be retired.
+	awaitingDevice, err := h.createDevice("MET-1501")
+	if err != nil {
+		return err
+	}
+	awaitingCase, err := h.openCase(awaitingDevice)
+	if err != nil {
+		return err
+	}
+	awaitingCaseID, err := nestedString(awaitingCase.Body, "case", "id")
+	if err != nil {
+		return err
+	}
+	blocked, err := h.retireDevice(awaitingDevice, "Lin", "replacement asset arrived")
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(blocked, http.StatusConflict); err != nil {
+		return err
+	}
+	if err := expectErrorCode(blocked, "active_case_exists"); err != nil {
+		return err
+	}
+
+	recheckDevice, err := h.createDevice("MET-1502")
+	if err != nil {
+		return err
+	}
+	recheckCaseID, err := h.rejectedCaseIDFor(recheckDevice)
+	if err != nil {
+		return err
+	}
+	blockedRecheck, err := h.retireDevice(recheckDevice, "Lin", "replacement asset arrived")
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(blockedRecheck, http.StatusConflict); err != nil {
+		return err
+	}
+	if err := expectErrorCode(blockedRecheck, "active_case_exists"); err != nil {
+		return err
+	}
+
+	readyDevice, err := h.createDevice("MET-1503")
+	if err != nil {
+		return err
+	}
+	readyCaseID, err := h.readyCaseIDFor(readyDevice)
+	if err != nil {
+		return err
+	}
+	sealed, err := h.request(http.MethodPost, "/cases/"+readyCaseID+"/seal", map[string]any{
+		"reviewer": "Verifier",
+		"summary":  "accepted measurement sealed for review",
+	})
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(sealed, http.StatusCreated); err != nil {
+		return err
+	}
+
+	// Retirement requires an actor and a reason.
+	missingReason, err := h.retireDevice(readyDevice, "Lin", "   ")
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(missingReason, http.StatusBadRequest); err != nil {
+		return err
+	}
+	if err := expectErrorCode(missingReason, "invalid_input"); err != nil {
+		return err
+	}
+
+	// The rejected retirement left the device active.
+	readBlocked, err := h.request(http.MethodGet, "/devices/"+awaitingDevice, nil)
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(readBlocked, http.StatusOK); err != nil {
+		return err
+	}
+	blockedStatus, err := nestedString(readBlocked.Body, "device", "status")
+	if err != nil {
+		return err
+	}
+	if blockedStatus != "active" {
+		return fmt.Errorf("blocked device status = %q, expected active", blockedStatus)
+	}
+
+	// The rejected retirement did not touch the unfinished cases.
+	awaitingRead, err := h.request(http.MethodGet, "/cases/"+awaitingCaseID, nil)
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(awaitingRead, http.StatusOK); err != nil {
+		return err
+	}
+	awaitingState, err := nestedString(awaitingRead.Body, "case", "state")
+	if err != nil {
+		return err
+	}
+	if awaitingState != "awaiting_measurement" {
+		return fmt.Errorf("blocked case state = %q, expected awaiting_measurement", awaitingState)
+	}
+	recheckRead, err := h.request(http.MethodGet, "/cases/"+recheckCaseID, nil)
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(recheckRead, http.StatusOK); err != nil {
+		return err
+	}
+	recheckState, err := nestedString(recheckRead.Body, "case", "state")
+	if err != nil {
+		return err
+	}
+	if recheckState != "recheck_required" {
+		return fmt.Errorf("blocked case state = %q, expected recheck_required", recheckState)
+	}
+
+	// After the last case reaches its terminal state, retirement succeeds once.
+	retired, err := h.retireDevice(readyDevice, " Lin ", " replacement asset arrived ")
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(retired, http.StatusOK); err != nil {
+		return err
+	}
+	status, err := nestedString(retired.Body, "device", "status")
+	if err != nil {
+		return err
+	}
+	if status != "retired" {
+		return fmt.Errorf("retired device status = %q", status)
+	}
+	retiredBy, err := nestedString(retired.Body, "device", "retired_by")
+	if err != nil {
+		return err
+	}
+	if retiredBy != "Lin" {
+		return fmt.Errorf("retired_by = %q, expected Lin", retiredBy)
+	}
+	retiredReason, err := nestedString(retired.Body, "device", "retired_reason")
+	if err != nil {
+		return err
+	}
+	if retiredReason != "replacement asset arrived" {
+		return fmt.Errorf("retired_reason = %q", retiredReason)
+	}
+	retiredAt, err := nestedString(retired.Body, "device", "retired_at")
+	if err != nil {
+		return err
+	}
+	if retiredAt == "" {
+		return errors.New("retired_at was not recorded")
+	}
+	if _, parsed := time.Parse(time.RFC3339, retiredAt); parsed != nil {
+		return fmt.Errorf("retired_at is not a timestamp: %q", retiredAt)
+	}
+
+	// The detail read keeps the same retirement record.
+	read, err := h.request(http.MethodGet, "/devices/"+readyDevice, nil)
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(read, http.StatusOK); err != nil {
+		return err
+	}
+	readReason, err := nestedString(read.Body, "device", "retired_reason")
+	if err != nil {
+		return err
+	}
+	if readReason != retiredReason {
+		return fmt.Errorf("device read changed the retirement reason: %q", readReason)
+	}
+
+	// Historical cases, measurements, and case audit events remain readable.
+	history, err := h.request(http.MethodGet, "/cases/"+readyCaseID, nil)
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(history, http.StatusOK); err != nil {
+		return err
+	}
+	historyState, err := nestedString(history.Body, "case", "state")
+	if err != nil {
+		return err
+	}
+	if historyState != "sealed" {
+		return fmt.Errorf("historical case state = %q, expected sealed", historyState)
+	}
+	measurements, err := nestedSlice(history.Body, "measurements")
+	if err != nil {
+		return err
+	}
+	if len(measurements) != 1 {
+		return fmt.Errorf("historical measurements changed: %d entries", len(measurements))
+	}
+	historyEvents, err := h.request(http.MethodGet, "/cases/"+readyCaseID+"/events", nil)
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(historyEvents, http.StatusOK); err != nil {
+		return err
+	}
+	if !hasEvent(historyEvents.Body, "case_sealed") {
+		return errors.New("sealed case audit history is missing")
+	}
+
+	// A retired device rejects both repeat retirement and new cases.
+	again, err := h.retireDevice(readyDevice, "Lin", "duplicate request")
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(again, http.StatusConflict); err != nil {
+		return err
+	}
+	if err := expectErrorCode(again, "state_conflict"); err != nil {
+		return err
+	}
+	newCase, err := h.request(http.MethodPost, "/cases", map[string]any{
+		"device_id": readyDevice,
+		"nominal":   25.0,
+		"tolerance": 0.5,
+		"steward":   "Qiao",
+	})
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(newCase, http.StatusConflict); err != nil {
+		return err
+	}
+	if err := expectErrorCode(newCase, "state_conflict"); err != nil {
+		return err
+	}
+
+	// Retire racing an open case settles on exactly one outcome.
+	raceDevice, err := h.createDevice("MET-1504")
+	if err != nil {
+		return err
+	}
+	type outcome struct {
+		response apiResponse
+		err      error
+	}
+	results := make(chan outcome, 2)
+	var wait sync.WaitGroup
+	wait.Add(1)
+	go func() {
+		defer wait.Done()
+		response, err := h.retireDevice(raceDevice, "Lin", "concurrent disposal")
+		results <- outcome{response: response, err: err}
+	}()
+	wait.Add(1)
+	go func() {
+		defer wait.Done()
+		response, err := h.request(http.MethodPost, "/cases", map[string]any{
+			"device_id": raceDevice,
+			"nominal":   25.0,
+			"tolerance": 0.5,
+			"steward":   "Qiao",
+		})
+		results <- outcome{response: response, err: err}
+	}()
+	wait.Wait()
+	close(results)
+
+	retiredWins := 0
+	openWins := 0
+	for item := range results {
+		if item.err != nil {
+			return item.err
+		}
+		switch item.response.Status {
+		case http.StatusOK:
+			retiredWins++
+		case http.StatusCreated:
+			openWins++
+		case http.StatusConflict:
+		default:
+			return fmt.Errorf("unexpected concurrent outcome status %d: %s", item.response.Status, item.response.Raw)
+		}
+	}
+	if retiredWins+openWins != 1 {
+		return fmt.Errorf("concurrent retire/open outcomes: %d retired, %d opened", retiredWins, openWins)
+	}
+	final, err := h.request(http.MethodGet, "/devices/"+raceDevice, nil)
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(final, http.StatusOK); err != nil {
+		return err
+	}
+	finalStatus, err := nestedString(final.Body, "device", "status")
+	if err != nil {
+		return err
+	}
+	switch {
+	case retiredWins == 1 && finalStatus == "retired":
+	case openWins == 1 && finalStatus == "active":
+	default:
+		return fmt.Errorf("concurrent final device status = %q (retired wins=%d, open wins=%d)", finalStatus, retiredWins, openWins)
+	}
+	return nil
+}
+
 func newHarness() *harness {
 	server := httptest.NewServer(bootstrap.NewHandler())
 	return &harness{
@@ -463,11 +774,14 @@ func (h *harness) recordMeasurement(caseID string, observed float64, technician 
 	})
 }
 
-func (h *harness) rejectedCase(tag string) (string, error) {
-	deviceID, err := h.createDevice(tag)
-	if err != nil {
-		return "", err
-	}
+func (h *harness) retireDevice(deviceID, actor, reason string) (apiResponse, error) {
+	return h.request(http.MethodPost, "/devices/"+deviceID+"/retire", map[string]any{
+		"actor":  actor,
+		"reason": reason,
+	})
+}
+
+func (h *harness) rejectedCaseIDFor(deviceID string) (string, error) {
 	opened, err := h.openCase(deviceID)
 	if err != nil {
 		return "", err
@@ -486,11 +800,7 @@ func (h *harness) rejectedCase(tag string) (string, error) {
 	return caseID, nil
 }
 
-func (h *harness) readyCase(tag string) (string, error) {
-	deviceID, err := h.createDevice(tag)
-	if err != nil {
-		return "", err
-	}
+func (h *harness) readyCaseIDFor(deviceID string) (string, error) {
 	opened, err := h.openCase(deviceID)
 	if err != nil {
 		return "", err
@@ -507,6 +817,22 @@ func (h *harness) readyCase(tag string) (string, error) {
 		return "", err
 	}
 	return caseID, nil
+}
+
+func (h *harness) rejectedCase(tag string) (string, error) {
+	deviceID, err := h.createDevice(tag)
+	if err != nil {
+		return "", err
+	}
+	return h.rejectedCaseIDFor(deviceID)
+}
+
+func (h *harness) readyCase(tag string) (string, error) {
+	deviceID, err := h.createDevice(tag)
+	if err != nil {
+		return "", err
+	}
+	return h.readyCaseIDFor(deviceID)
 }
 
 func expectStatus(response apiResponse, expected int) error {

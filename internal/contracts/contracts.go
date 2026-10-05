@@ -9,6 +9,11 @@ type RegisterDeviceRequest struct {
 	Steward  string `json:"steward"`
 }
 
+type RetireDeviceRequest struct {
+	Actor  string `json:"actor"`
+	Reason string `json:"reason"`
+}
+
 type OpenCaseRequest struct {
 	DeviceID  string  `json:"device_id"`
 	Nominal   float64 `json:"nominal"`
