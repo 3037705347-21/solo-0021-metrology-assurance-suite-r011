@@ -77,6 +77,43 @@ func (s *Service) Device(ctx context.Context, id string) (domain.Device, error) 
 	return found, err
 }
 
+func (s *Service) RetireDevice(ctx context.Context, id string, input contracts.RetireDeviceRequest) (domain.Device, error) {
+	var updated domain.Device
+	err := s.repository.Mutate(ctx, func(m *repository.Mutation) error {
+		deviceID := strings.TrimSpace(id)
+		device, exists := m.Device(deviceID)
+		if !exists {
+			return fmt.Errorf("%w: device %s", domain.ErrNotFound, deviceID)
+		}
+		if active, exists := m.ActiveCaseForDevice(device.ID); exists {
+			return fmt.Errorf("%w: case %s for device %s is still %s", domain.ErrActiveCaseExists, active.ID, device.ID, active.State)
+		}
+		if err := device.Retire(input.Actor, input.Reason, s.now()); err != nil {
+			return err
+		}
+		if err := m.UpdateDevice(device); err != nil {
+			return err
+		}
+		event, err := domain.NewAuditEvent(
+			m.NextID("event"),
+			"device",
+			device.ID,
+			"",
+			"device_retired",
+			device.RetiredBy,
+			device.RetireReason,
+			s.now(),
+		)
+		if err != nil {
+			return err
+		}
+		m.AppendEvent(event)
+		updated = device
+		return nil
+	})
+	return updated, err
+}
+
 func (s *Service) OpenCase(ctx context.Context, input contracts.OpenCaseRequest) (contracts.CaseResponse, error) {
 	var result contracts.CaseResponse
 	err := s.repository.Mutate(ctx, func(m *repository.Mutation) error {

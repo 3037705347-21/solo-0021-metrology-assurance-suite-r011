@@ -65,6 +65,18 @@ The verifier sends `POST /cases/{id}/seal` after an accepted measurement. Only
 measurement with the smallest absolute deviation, creates exactly one evidence
 seal, moves the case to `sealed`, and rejects later mutations.
 
+### 6. Retire Device
+
+The responsible steward sends `POST /devices/{id}/retire` with an actor and a
+reason once disposal is complete. The service rejects the request when the
+device is missing, when the actor or reason is empty, or when the device still
+has an unfinished (non-sealed) case. A valid request moves the device to
+`retired`, records the actor, reason, and timestamp on the device, and appends
+a `device_retired` audit event in the same repository commit. A retired device
+cannot open a new case, and retiring an already retired device fails with a
+state conflict. Historical cases, their audit events, and device/case detail
+reads are unaffected by retirement.
+
 ## State And Rules
 
 Device state:
@@ -88,8 +100,16 @@ Required invariants:
 - A tolerance must be positive.
 - A case can have at most one evidence seal.
 - A sealed case cannot accept measurements, reopen, or seal again.
+- An active device with an unfinished case cannot be retired; a retired device
+  keeps the retirement actor, reason, and time and cannot open a new case.
+- Retirement and case opening are decided under the same repository mutation
+  lock: concurrent requests settle into exactly one outcome, and repeated
+  retirement of the same device always conflicts.
+- Retirement does not alter historical cases, measurements, seals, or audit
+  events, and detail reads continue to return them unchanged.
 - Every mutation that changes a case also appends an audit event in the same
-  repository commit.
+  repository commit; every successful device retirement appends a
+  `device_retired` audit event the same way.
 
 ## Modules
 
@@ -107,6 +127,7 @@ Required invariants:
 - `GET /healthz`
 - `POST /devices`
 - `GET /devices/{id}`
+- `POST /devices/{id}/retire`
 - `POST /cases`
 - `GET /cases/{id}`
 - `POST /cases/{id}/measurements`
@@ -121,7 +142,10 @@ bounded production smoke command under `cmd/workflowcheck`. The command starts
 an HTTP test server in the same process, calls the public routes, and verifies
 both success and failure behavior. The seal check also races two concurrent
 seal requests to prove that the repository mutation lock permits exactly one
-seal.
+seal. The retire check verifies the recorded actor, reason, and time, blocks
+retirement while any case is unfinished, blocks new cases after retirement,
+keeps sealed history readable, rejects repeated retirement, and races a
+retirement against a case opening to prove that exactly one outcome settles.
 
 Tests are intentionally deferred for this initialization baseline. The later
 engineering-task stage will add unit and integration tests, including red/green

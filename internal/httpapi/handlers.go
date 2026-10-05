@@ -33,6 +33,20 @@ func (s *Server) device(writer http.ResponseWriter, request *http.Request) {
 	writeJSON(writer, http.StatusOK, contracts.DeviceResponse{Device: device})
 }
 
+func (s *Server) retireDevice(writer http.ResponseWriter, request *http.Request) {
+	input, err := decodeJSON[contracts.RetireDeviceRequest](writer, request)
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	device, err := s.service.RetireDevice(request.Context(), request.PathValue("id"), input)
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, contracts.DeviceResponse{Device: device})
+}
+
 func (s *Server) openCase(writer http.ResponseWriter, request *http.Request) {
 	input, err := decodeJSON[contracts.OpenCaseRequest](writer, request)
 	if err != nil {

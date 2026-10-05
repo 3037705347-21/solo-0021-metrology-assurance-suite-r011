@@ -31,6 +31,11 @@ type SealCaseRequest struct {
 	Summary  string `json:"summary"`
 }
 
+type RetireDeviceRequest struct {
+	Actor  string `json:"actor"`
+	Reason string `json:"reason"`
+}
+
 type DeviceResponse struct {
 	Device domain.Device `json:"device"`
 }

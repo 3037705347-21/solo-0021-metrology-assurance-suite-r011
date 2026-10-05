@@ -14,14 +14,16 @@ const (
 )
 
 type Device struct {
-	ID         string       `json:"id"`
-	AssetTag   string       `json:"asset_tag"`
-	Model      string       `json:"model"`
-	Room       string       `json:"room"`
-	Steward    string       `json:"steward"`
-	Status     DeviceStatus `json:"status"`
-	EnrolledAt time.Time    `json:"enrolled_at"`
-	RetiredAt  *time.Time   `json:"retired_at,omitempty"`
+	ID           string       `json:"id"`
+	AssetTag     string       `json:"asset_tag"`
+	Model        string       `json:"model"`
+	Room         string       `json:"room"`
+	Steward      string       `json:"steward"`
+	Status       DeviceStatus `json:"status"`
+	EnrolledAt   time.Time    `json:"enrolled_at"`
+	RetiredAt    *time.Time   `json:"retired_at,omitempty"`
+	RetiredBy    string       `json:"retired_by,omitempty"`
+	RetireReason string       `json:"retire_reason,omitempty"`
 }
 
 func NewDevice(id, assetTag, model, room, steward string, at time.Time) (Device, error) {
@@ -55,23 +57,37 @@ func (d Device) Validate() error {
 		return fmt.Errorf("%w: enrollment time is required", ErrInvalidInput)
 	}
 	switch d.Status {
-	case DeviceActive, DeviceRetired:
-		return nil
+	case DeviceActive:
+		if d.RetiredAt != nil || d.RetiredBy != "" || d.RetireReason != "" {
+			return fmt.Errorf("%w: an active device cannot carry retirement records", ErrInvalidInput)
+		}
+	case DeviceRetired:
+		if d.RetiredAt == nil || d.RetiredBy == "" || d.RetireReason == "" {
+			return fmt.Errorf("%w: a retired device requires retirement time, actor, and reason", ErrInvalidInput)
+		}
 	default:
 		return fmt.Errorf("%w: unsupported device state %q", ErrInvalidInput, d.Status)
 	}
+	return nil
 }
 
 func (d Device) IsActive() bool {
 	return d.Status == DeviceActive
 }
 
-func (d *Device) Retire(at time.Time) error {
+func (d *Device) Retire(actor, reason string, at time.Time) error {
 	if d.Status != DeviceActive {
 		return fmt.Errorf("%w: only an active device can be retired", ErrStateConflict)
+	}
+	actor = strings.TrimSpace(actor)
+	reason = strings.TrimSpace(reason)
+	if actor == "" || reason == "" {
+		return fmt.Errorf("%w: retirement actor and reason are required", ErrInvalidInput)
 	}
 	stamp := at.UTC()
 	d.Status = DeviceRetired
 	d.RetiredAt = &stamp
+	d.RetiredBy = actor
+	d.RetireReason = reason
 	return nil
 }
